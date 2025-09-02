@@ -31,6 +31,7 @@ use libmdbx::{
     table_info,
 };
 use serde_json;
+use tracing::info;
 use std::fmt::{Debug, Formatter};
 use std::path::Path;
 use std::sync::Arc;
@@ -566,7 +567,20 @@ impl StoreEngine for Store {
             ChainDataIndex::LatestBlockNumber,
             block_number.encode_to_vec(),
         )
-        .await
+        .await?;
+        // Look for last block with available state
+        for i in (block_number - 128)..(block_number+1) {
+            let block_header = self.get_block_header(i)?.unwrap();
+            let state_root = block_header.state_root;
+            if self
+            .open_state_trie(*ethrex_trie::EMPTY_TRIE_HASH)?
+            .db()
+            .get(state_root.into())?
+            .is_some(){
+                info!("Block number {i} has state in DB");
+            }
+        }
+        Ok(())
     }
 
     async fn get_pending_block_number(&self) -> Result<Option<BlockNumber>, StoreError> {

@@ -142,7 +142,7 @@ impl Established {
 
 #[derive(Clone, Debug)]
 pub enum InnerState {
-    HandshakeFailed,
+    HandshakeFailed(Option<H256>),
     Initiator(Initiator),
     Receiver(Receiver),
     Established(Established),
@@ -201,7 +201,7 @@ impl RLPxConnection {
     async fn get_node_id(&self) -> Option<H256> {
         match &self.inner_state {
             InnerState::Established(established_state) => Some(established_state.node.node_id()),
-            InnerState::HandshakeFailed => None,
+            InnerState::HandshakeFailed(id) => *id,
             InnerState::Initiator(initiator) => Some(initiator.node.node_id()),
             InnerState::Receiver(receiver) => None,
         }
@@ -218,9 +218,10 @@ impl GenServer for RLPxConnection {
         mut self,
         handle: &GenServerHandle<Self>,
     ) -> Result<InitResult<Self>, Self::Error> {
+        let id = self.get_node_id().await;
         match INITIATOR.get() {
             Some(handle) => {
-                RLPxInitiator::up(&mut handle.clone(), self.get_node_id().await).await;
+                RLPxInitiator::up(&mut handle.clone(), id).await;
             }
             None => {
                 error!(
@@ -266,7 +267,7 @@ impl GenServer for RLPxConnection {
                 // Handshake failed, just log a debug message.
                 // No connection was established so no need to perform any other action
                 debug!("Failed Handshake on RLPx connection {err}");
-                self.inner_state = InnerState::HandshakeFailed;
+                self.inner_state = InnerState::HandshakeFailed(id);
                 Ok(NoSuccess(self))
             }
         }

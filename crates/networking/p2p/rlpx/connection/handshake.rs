@@ -114,7 +114,7 @@ pub(crate) async fn perform(
         }
         // Shouldn't perform a Handshake on an already failed connection.
         // Put it here to complete the match arms
-        InnerState::HandshakeFailed => {
+        InnerState::HandshakeFailed(_) => {
             return Err(RLPxError::StateError("Handshake Failed".to_string()));
         }
     };

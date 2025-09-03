@@ -197,6 +197,15 @@ impl RLPxConnection {
         let connection = RLPxConnection { inner_state };
         connection.start()
     }
+
+    async fn get_node_id(&self) -> Option<H256> {
+        match &self.inner_state {
+            InnerState::Established(established_state) => Some(established_state.node.node_id()),
+            InnerState::HandshakeFailed => None,
+            InnerState::Initiator(initiator) => Some(initiator.node.node_id()),
+            InnerState::Receiver(receiver) => None,
+        }
+    }
 }
 
 impl GenServer for RLPxConnection {
@@ -209,6 +218,16 @@ impl GenServer for RLPxConnection {
         mut self,
         handle: &GenServerHandle<Self>,
     ) -> Result<InitResult<Self>, Self::Error> {
+        match INITIATOR.get() {
+            Some(handle) => {
+                RLPxInitiator::up(&mut handle.clone(), self.get_node_id().await).await;
+            }
+            None => {
+                error!(
+                    "We stopped an RLPxConnection without the Initiator online to ask for more peers"
+                );
+            }
+        }
         match handshake::perform(self.inner_state).await {
             Ok((mut established_state, stream)) => {
                 log_peer_debug(&established_state.node, "Starting RLPx connection");
@@ -358,27 +377,9 @@ impl GenServer for RLPxConnection {
     }
 
     async fn teardown(self, _handle: &GenServerHandle<Self>) -> Result<(), Self::Error> {
-        match self.inner_state {
-            InnerState::Established(established_state) => {
-                log_peer_debug(
-                    &established_state.node,
-                    "Closing connection with established peer",
-                );
-                established_state
-                    .table
-                    .peers
-                    .lock()
-                    .await
-                    .remove(&established_state.node.node_id());
-                established_state.teardown().await;
-            }
-            _ => {
-                // Nothing to do if the connection was not established
-            }
-        };
         match INITIATOR.get() {
             Some(handle) => {
-                RLPxInitiator::down(&mut handle.clone()).await;
+                RLPxInitiator::down(&mut handle.clone(), self.get_node_id().await).await;
             }
             None => {
                 error!(

@@ -1,4 +1,9 @@
-use std::{sync::LazyLock, time::Duration};
+use ethrex_common::H256;
+use std::{
+    collections::{BTreeSet, HashSet},
+    sync::LazyLock,
+    time::Duration,
+};
 
 use spawned_concurrency::{
     messages::Unused,
@@ -7,7 +12,7 @@ use spawned_concurrency::{
 };
 
 use tokio::{sync::OnceCell, time::Instant};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::{metrics::METRICS, network::P2PContext};
 
@@ -32,6 +37,9 @@ pub struct RLPxInitiator {
     initial_lookup_interval: Duration,
     lookup_interval: Duration,
 
+    /// The peers we are trying to connect or are connected
+    attemption_connection: BTreeSet<H256>,
+
     /// Interval for logging the amount for peers and clearing the table of aleeady connected peers.
     last_log_time: Instant,
 
@@ -47,6 +55,7 @@ impl RLPxInitiator {
             lookup_interval: Duration::from_secs(5 * 60),
             target_peers: 500,
             last_log_time: Instant::now(),
+            attemption_connection: BTreeSet::new(),
         }
     }
 
@@ -80,11 +89,11 @@ impl RLPxInitiator {
 
         if self.last_log_time.elapsed() > Duration::from_secs(2) {
             info!(
-                "Resetting list of tried peers. Current peers {}",
+                "Current peers {} attemption connection {}",
                 peer_number,
+                self.attemption_connection.len()
             );
             self.last_log_time = Instant::now();
-            already_tried_peers.clear();
         }
 
         if peer_number > self.target_peers {
@@ -93,7 +102,10 @@ impl RLPxInitiator {
 
         for contact in self.context.table.table.lock().await.values() {
             let node_id = contact.node.node_id();
-            if !already_tried_peers.contains(&node_id) && contact.knows_us {
+            if !already_tried_peers.contains(&node_id)
+                && contact.knows_us
+                && !self.attemption_connection.contains(&node_id)
+            {
                 already_tried_peers.insert(node_id);
 
                 RLPxConnection::spawn_as_initiator(self.context.clone(), &contact.node).await;
@@ -102,6 +114,9 @@ impl RLPxInitiator {
                 return true;
             }
         }
+
+        warn!("We didn't find anyone we didn't try before, clearing known table");
+        already_tried_peers.clear();
         false
     }
 
@@ -116,13 +131,30 @@ impl RLPxInitiator {
         }
     }
 
-    pub async fn down(handle: &mut GenServerHandle<RLPxInitiator>) {
-        handle.cast(InMessage::LookForPeer).await;
+    pub async fn up(handle: &mut GenServerHandle<RLPxInitiator>, node_id: Option<H256>) {
+        match node_id {
+            Some(node_id) => {
+                handle.cast(InMessage::Up(node_id)).await;
+            }
+            None => {}
+        }
+    }
+
+    pub async fn down(handle: &mut GenServerHandle<RLPxInitiator>, node_id: Option<H256>) {
+        match node_id {
+            Some(node_id) => {
+                handle.cast(InMessage::Down(node_id)).await;
+            }
+            None => {}
+        }
+        let _ = handle.cast(InMessage::LookForPeer).await;
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum InMessage {
+    Up(H256),
+    Down(H256),
     LookForPeer,
 }
 
@@ -154,6 +186,14 @@ impl GenServer for RLPxInitiator {
                     );
                 };
 
+                CastResponse::NoReply
+            }
+            InMessage::Up(node_id) => {
+                self.attemption_connection.insert(node_id);
+                CastResponse::NoReply
+            }
+            InMessage::Down(node_id) => {
+                self.attemption_connection.remove(&node_id);
                 CastResponse::NoReply
             }
         }
